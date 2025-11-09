@@ -3,12 +3,15 @@ Type: Package
 Title: Surrogate-assisted Conformal Inference (Audrey Variant)
 Version: 0.0.0.9000
 Authors@R: c(
-  person("Audrey", "Qian", role = c("aut", "cre"), email = "aud2024@bu.edu")
+    person("Audrey", "Qian", role = c("aut", "cre"), email = "aud2024@bu.edu")
 )
-
 Description: Personalized variant of SurrConformalDR with custom functions.
 License: GPL-3
 Encoding: UTF-8
 LazyData: true
+Depends: R (>= 4.1)
+Imports: stats, methods
+Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.2
+
 
