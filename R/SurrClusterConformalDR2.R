@@ -91,7 +91,7 @@ SurrClusterConformalDR <- function(df,
       SL.library = SL.library
     )
 
-
+#Produces out-of-sample lower/upper quantile predictions for all rows in df (still representing the A=1 world).
     q.Y1 <- cbind(
       predict(m.X1q1.obj, newdata = df[, grep("([X])", colnames(df),
                                               value = TRUE
