@@ -1,6 +1,7 @@
 #' ============================================================================
 #' Complete Implementation: Surrogate-assisted Clustered Conformal Inference
 #' with Enhanced Cluster Selection Methods (BIC, AIC, Gap Statistic)
+#' and GMM Clustering Option
 #' ============================================================================
 
 # -----------------------------------------------------------------------------
@@ -49,6 +50,28 @@ compute_kmeans_aic <- function(kmeans_obj, data) {
   return(aic)
 }
 
+#' Compute BIC for GMM clustering
+#' @param gmm_obj A Mclust object from mclust package
+#' @return BIC value (higher is better for Mclust)
+compute_gmm_bic <- function(gmm_obj) {
+  # Mclust already computes BIC (note: higher is better in Mclust)
+  return(gmm_obj$bic)
+}
+
+#' Compute AIC for GMM clustering
+#' @param gmm_obj A Mclust object from mclust package
+#' @return AIC value (lower is better)
+compute_gmm_aic <- function(gmm_obj) {
+  # AIC = 2k - 2ln(L)
+  # where k is number of parameters and L is likelihood
+  num_params <- gmm_obj$df
+  loglik <- gmm_obj$loglik
+  
+  aic <- 2 * num_params - 2 * loglik
+  
+  return(aic)
+}
+
 #' Compute Gap Statistic for k-means clustering
 #' @param data The data matrix
 #' @param k Number of clusters to test
@@ -87,6 +110,46 @@ compute_gap_statistic <- function(data, k, B = 50, nstart = 10) {
   return(list(gap = gap, se = sk))
 }
 
+#' Perform clustering using specified algorithm
+#' @param embeddings The embedding matrix
+#' @param k Number of clusters
+#' @param method Clustering algorithm: 'kmeans' or 'gmm'
+#' @param nstart Number of random starts (for k-means)
+#' @param modelNames Model names for GMM (default: all models)
+#' @return List with cluster assignments and clustering object
+perform_clustering <- function(embeddings, k, 
+                              method = c("kmeans", "gmm"),
+                              nstart = 10,
+                              modelNames = NULL) {
+  
+  method <- match.arg(method)
+  
+  if (method == "kmeans") {
+    # K-means clustering
+    clust_obj <- kmeans(embeddings, centers = k, nstart = nstart)
+    return(list(
+      cluster = clust_obj$cluster,
+      object = clust_obj,
+      method = "kmeans"
+    ))
+    
+  } else if (method == "gmm") {
+    # Gaussian Mixture Model clustering
+    if (!requireNamespace("mclust", quietly = TRUE)) {
+      stop("Package 'mclust' is required for GMM clustering. Install it with: install.packages('mclust')")
+    }
+    
+    # If modelNames not specified, use default (allows all covariance structures)
+    gmm_obj <- mclust::Mclust(embeddings, G = k, modelNames = modelNames, verbose = FALSE)
+    
+    return(list(
+      cluster = gmm_obj$classification,
+      object = gmm_obj,
+      method = "gmm"
+    ))
+  }
+}
+
 #' Determine optimal number of clusters using specified method
 #' @param embeddings The embedding matrix (classes x features)
 #' @param labelsRY Class labels for each individual
@@ -96,6 +159,8 @@ compute_gap_statistic <- function(data, k, B = 50, nstart = 10) {
 #' @param max_k Maximum number of clusters to consider
 #' @param nstart Number of random starts for k-means
 #' @param gap_B Number of bootstrap samples for gap statistic
+#' @param clustering_method Clustering algorithm: 'kmeans' or 'gmm'
+#' @param gmm_modelNames Model names for GMM (NULL = automatic selection)
 #' @return Optimal number of clusters
 determine_optimal_clusters <- function(embeddings, 
                                       labelsRY, 
@@ -104,7 +169,9 @@ determine_optimal_clusters <- function(embeddings,
                                       method = 'auto',
                                       max_k = NULL,
                                       nstart = 10,
-                                      gap_B = 50) {
+                                      gap_B = 50,
+                                      clustering_method = "kmeans",
+                                      gmm_modelNames = NULL) {
   
   numlabel <- nrow(embeddings)
   
@@ -127,15 +194,25 @@ determine_optimal_clusters <- function(embeddings,
     # BIC-based selection
     bic_values <- numeric(max_k - 1)
     
-    for (k in 2:max_k) {
-      kmeans_obj <- kmeans(embeddings, centers = k, nstart = nstart)
-      bic_values[k - 1] <- compute_kmeans_bic(kmeans_obj, embeddings)
+    if (clustering_method == "kmeans") {
+      for (k in 2:max_k) {
+        clust_result <- perform_clustering(embeddings, k, method = "kmeans", nstart = nstart)
+        bic_values[k - 1] <- compute_kmeans_bic(clust_result$object, embeddings)
+      }
+      # Select k with minimum BIC (lower is better)
+      numcluster <- which.min(bic_values) + 1
+      
+    } else if (clustering_method == "gmm") {
+      for (k in 2:max_k) {
+        clust_result <- perform_clustering(embeddings, k, method = "gmm", 
+                                          modelNames = gmm_modelNames)
+        bic_values[k - 1] <- compute_gmm_bic(clust_result$object)
+      }
+      # Select k with maximum BIC (higher is better for Mclust)
+      numcluster <- which.max(bic_values) + 1
     }
     
-    # Select k with minimum BIC
-    numcluster <- which.min(bic_values) + 1
-    
-    cat("BIC values for k=2 to", max_k, ":\n")
+    cat("BIC values for k=2 to", max_k, "(", clustering_method, "):\n")
     print(data.frame(k = 2:max_k, BIC = bic_values))
     cat("Optimal k by BIC:", numcluster, "\n\n")
     
@@ -143,20 +220,33 @@ determine_optimal_clusters <- function(embeddings,
     # AIC-based selection
     aic_values <- numeric(max_k - 1)
     
-    for (k in 2:max_k) {
-      kmeans_obj <- kmeans(embeddings, centers = k, nstart = nstart)
-      aic_values[k - 1] <- compute_kmeans_aic(kmeans_obj, embeddings)
+    if (clustering_method == "kmeans") {
+      for (k in 2:max_k) {
+        clust_result <- perform_clustering(embeddings, k, method = "kmeans", nstart = nstart)
+        aic_values[k - 1] <- compute_kmeans_aic(clust_result$object, embeddings)
+      }
+    } else if (clustering_method == "gmm") {
+      for (k in 2:max_k) {
+        clust_result <- perform_clustering(embeddings, k, method = "gmm",
+                                          modelNames = gmm_modelNames)
+        aic_values[k - 1] <- compute_gmm_aic(clust_result$object)
+      }
     }
     
-    # Select k with minimum AIC
+    # Select k with minimum AIC (lower is better)
     numcluster <- which.min(aic_values) + 1
     
-    cat("AIC values for k=2 to", max_k, ":\n")
+    cat("AIC values for k=2 to", max_k, "(", clustering_method, "):\n")
     print(data.frame(k = 2:max_k, AIC = aic_values))
     cat("Optimal k by AIC:", numcluster, "\n\n")
     
   } else if (method == 'gap') {
-    # Gap statistic-based selection
+    # Gap statistic only works with k-means
+    if (clustering_method == "gmm") {
+      warning("Gap statistic is only implemented for k-means. Switching to k-means for cluster selection.")
+      clustering_method <- "kmeans"
+    }
+    
     gap_results <- data.frame(
       k = 2:max_k,
       gap = numeric(max_k - 1),
@@ -210,6 +300,7 @@ determine_optimal_clusters <- function(embeddings,
 #' Causal Effect Estimation
 #'
 #' Enhanced version with multiple cluster selection methods (BIC, AIC, Gap Statistic)
+#' and GMM clustering option
 #'
 #' @param df Data frame containing the variables
 #' @param train.idx Training data indices
@@ -220,6 +311,8 @@ determine_optimal_clusters <- function(embeddings,
 #' @param cluster_max_k Maximum number of clusters to consider for optimization methods
 #' @param cluster_nstart Number of random starts for k-means
 #' @param gap_B Number of bootstrap samples for gap statistic
+#' @param clustering_method Clustering algorithm: 'kmeans' or 'gmm' (Gaussian Mixture Model)
+#' @param gmm_modelNames GMM covariance structure: NULL (auto), 'EII', 'VII', 'EEI', 'VEI', 'EVI', 'VVI', 'EEE', 'EVE', 'VEE', 'VVE', 'EEV', 'VEV', 'EVV', 'VVV'
 #' @param outcome.type Type of outcome: "Continuous" or "Categorical"
 #' @param SL.library SuperLearner library for fitting models
 #' @param alphaCI Significance level (default 0.05)
@@ -228,31 +321,47 @@ determine_optimal_clusters <- function(embeddings,
 #' @return Data frame with prediction intervals/sets for evaluation samples
 #' 
 #' @details
-#' When outcome.type = "Continuous":
-#' * lower.Y, upper.Y: prediction regions for the observed outcomes
-#' * lower.tau, upper.tau: prediction regions for individualized treatment effects
-#'
-#' When outcome.type = "Categorical":
-#' * sets_observed: prediction sets for the observed outcomes
+#' Clustering methods:
+#' * kmeans: Traditional k-means (spherical clusters, hard assignments)
+#' * gmm: Gaussian Mixture Model (elliptical clusters, soft assignments, more flexible)
+#' 
+#' GMM modelNames (covariance structures):
+#' * NULL: Automatically select best model
+#' * 'EII': Spherical, equal volume
+#' * 'VII': Spherical, unequal volume
+#' * 'EEE': Ellipsoidal, equal volume/shape/orientation
+#' * 'VVV': Ellipsoidal, varying volume/shape/orientation (most flexible)
 #'
 #' @examples
-#' # Use BIC for cluster selection
+#' # Use k-means with BIC
 #' result <- SurrClusterConformalDR(
 #'   df = mydata,
 #'   train.idx = train_indices,
 #'   eval.idx = eval_indices,
 #'   numcluster = 'bic',
-#'   cluster_max_k = 10,
+#'   clustering_method = 'kmeans',
 #'   outcome.type = "Continuous"
 #' )
 #'
-#' # Use Gap Statistic
+#' # Use GMM with automatic model selection
 #' result <- SurrClusterConformalDR(
 #'   df = mydata,
 #'   train.idx = train_indices,
 #'   eval.idx = eval_indices,
-#'   numcluster = 'gap',
-#'   gap_B = 100,
+#'   numcluster = 'bic',
+#'   clustering_method = 'gmm',
+#'   gmm_modelNames = NULL,
+#'   outcome.type = "Continuous"
+#' )
+#'
+#' # Use GMM with flexible covariance structure
+#' result <- SurrClusterConformalDR(
+#'   df = mydata,
+#'   train.idx = train_indices,
+#'   eval.idx = eval_indices,
+#'   numcluster = 'aic',
+#'   clustering_method = 'gmm',
+#'   gmm_modelNames = 'VVV',  # Most flexible
 #'   outcome.type = "Continuous"
 #' )
 #'
@@ -265,14 +374,19 @@ SurrClusterConformalDR <- function(df,
                                   cluster_max_k = NULL,
                                   cluster_nstart = 10,
                                   gap_B = 50,
+                                  clustering_method = c("kmeans", "gmm"),
+                                  gmm_modelNames = NULL,
                                   outcome.type = c("Continuous", "Categorical"),
                                   SL.library = c("SL.glm"),
                                   alphaCI = 0.05,
                                   nested = TRUE) {
   
+  # Match arguments
+  clustering_method <- match.arg(clustering_method)
+  outcome.type <- match.arg(outcome.type)
+  
   # Begin estimation
   N <- nrow(df)
-  outcome.type <- match.arg(outcome.type)
   
   ## -------------------
   # Create non-conformity score
@@ -470,7 +584,7 @@ SurrClusterConformalDR <- function(df,
   )
   
   ## -------------------------
-  # ENHANCED CLUSTERING SECTION
+  # ENHANCED CLUSTERING SECTION WITH GMM OPTION
   ## -------------------------
   
   # The class label for the evaluation data
@@ -516,20 +630,33 @@ SurrClusterConformalDR <- function(df,
       method = numcluster,
       max_k = cluster_max_k,
       nstart = cluster_nstart,
-      gap_B = gap_B
+      gap_B = gap_B,
+      clustering_method = clustering_method,
+      gmm_modelNames = gmm_modelNames
     )
   }
   
-  # Perform k-means clustering
+  # Perform clustering using selected method
   if(numcluster < nrow(embeddings)){
-    kmeans_result <- kmeans(embeddings,
-                            centers = numcluster,
-                            nstart = cluster_nstart)
+    clustering_result <- perform_clustering(
+      embeddings = embeddings,
+      k = numcluster,
+      method = clustering_method,
+      nstart = cluster_nstart,
+      modelNames = gmm_modelNames
+    )
+    
     # Remap the cluster to each individual from the evaluation set
-    df.eval$cluster <- kmeans_result$cluster[df.eval$class]
+    df.eval$cluster <- clustering_result$cluster[df.eval$class]
+    
+    # Store clustering object for potential diagnostics
+    clustering_obj <- clustering_result$object
+    
   } else {
-    kmeans_result <- list(cluster = 1:nrow(embeddings))
-    df.eval$cluster <- kmeans_result$cluster[df.eval$class]
+    # If numcluster >= nrow(embeddings), keep original class structure
+    clustering_result <- list(cluster = 1:nrow(embeddings))
+    df.eval$cluster <- clustering_result$cluster[df.eval$class]
+    clustering_obj <- NULL
   }
   
   ## -------------------------
@@ -590,7 +717,7 @@ SurrClusterConformalDR <- function(df,
   if (outcome.type == "Continuous") {
     # Conformal inference on the observed outcomes
     # wS
-    cls <- kmeans_result$cluster[df.eval$class]
+    cls <- clustering_result$cluster[df.eval$class]
     lower.Y1_A1.wS <- c(predict(m.X1q1.obj,
                                 newdata = df.eval[, grep("([XA])", colnames(df.eval), value = TRUE)])$pred) -
       cutoff.Y1.wS_obs[cls]
@@ -698,14 +825,14 @@ SurrClusterConformalDR <- function(df,
     # For A = 0, Y1
     Y1predSet.A1wS <- sapply(1:nrow(R.XSY1Mat.XS.eval), function(idx){
       x <- R.XSY1Mat.XS.eval[idx, ]
-      cls <- kmeans_result$cluster[df.eval$class[idx]]
+      cls <- clustering_result$cluster[df.eval$class[idx]]
       level.Y <- colnames(probY1.XS)[order(x)]
       level.Y[which(x[order(x)] <= cutoff.Y1.wS_obs[cls])]
     }, simplify = FALSE)
     
     Y0predSet.A0wS <- sapply(1:nrow(R.XSY0Mat.XS.eval), function(idx){
       x <- R.XSY0Mat.XS.eval[idx, ]
-      cls <- kmeans_result$cluster[df.eval$class[idx]]
+      cls <- clustering_result$cluster[df.eval$class[idx]]
       level.Y <- colnames(probY0.XS)[order(x)]
       level.Y[which(x[order(x)] <= cutoff.Y0.wS_obs[cls])]
     }, simplify = FALSE)
