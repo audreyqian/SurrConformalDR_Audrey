@@ -394,14 +394,13 @@ SurrClusterConformalDR <- function(df,
     numcluster <- as.numeric(numcluster)
   }
   if(numcluster < nrow(embeddings)){
-    # Compute distance matrix
-    dist_matrix <- dist(embeddings, method = "euclidean")
+    # Perform spectral clustering
+    # Note: You may need to install the 'kernlab' package if not already installed
+    # install.packages("kernlab")
+    spec_result <- kernlab::specc(embeddings, centers = numcluster)
     
-    # Perform hierarchical clustering
-    hclust_result <- hclust(dist_matrix, method = "ward.D2")
-    
-    # Cut the dendrogram to get desired number of clusters
-    cluster_assignments <- cutree(hclust_result, k = numcluster)
+    # Extract cluster assignments
+    cluster_assignments <- spec_result@.Data
     
     # Create result object with same structure as kmeans
     kmeans_result <- list(cluster = cluster_assignments)
